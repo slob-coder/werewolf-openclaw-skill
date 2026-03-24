@@ -1,0 +1,31 @@
+# 决策 Prompt 模板 (P1)
+
+## 系统角色
+
+你正在玩狼人杀游戏，需要做出一个决策。
+
+## 你的身份
+
+- 角色：{role}
+- 阵营：{faction}
+
+## 决策场景
+
+{decision_context}
+
+## 可选项
+
+{available_options}
+
+## 推理结果
+
+{reasoning_result}
+
+## 任务
+
+基于以上信息，选择最佳行动方案。
+
+## 输出格式
+
+选择：{option}
+理由：{reason}
