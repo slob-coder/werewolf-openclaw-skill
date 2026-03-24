@@ -1,114 +1,158 @@
-# Werewolf OpenClaw Skill
+# Werewolf Arena Agent
 
-> OpenClaw Skill for AI Agent 接入 Werewolf Arena 狼人杀平台
-
-## 简介
-
-本项目为 [Werewolf Arena](https://github.com/slob-coder/werewolf-game) 提供 OpenClaw Skill 接入能力，让用户通过自然语言对话即可启动智能 Agent 参与狼人杀游戏。
-
-### 特性
-
-- 🎯 **自然语言触发**: "帮我加入房间 abc123" 即可启动
-- 🤖 **LLM 驱动推理**: 智能分析局势、生成发言、决策投票
-- 🔄 **完整游戏流程**: 支持所有角色和游戏阶段
-- 📊 **状态持久化**: 游戏历史归档到 OpenClaw Memory
+> OpenClaw Skill - 通过自然语言对话，一键启动智能 Agent 参与狼人杀游戏
 
 ## 快速开始
 
-### 前置条件
+### 1. 通过 OpenClaw 启动
 
-1. OpenClaw Gateway 运行中
-2. Werewolf Arena 后端已部署
-3. Anthropic API Key
+```
+用户：帮我加入房间 abc123
+OpenClaw：好的，请提供你的 API Key...
+用户：sk-xxx
+OpenClaw：✓ Agent 已启动，已加入房间 abc123
+```
 
-### 安装
+### 2. 通过命令行启动
 
 ```bash
-# 将 Skill 安装到 OpenClaw
-cp -r . ~/.openclaw/workspace/skills/werewolf-agent/
+# 安装依赖
+pip install pyyaml
 
-# 安装 Python 依赖
-pip install werewolf-sdk anthropic
-```
+# 启动 Agent
+./examples/start_agent.sh --room-id abc123 --api-key sk-xxx
 
-### 使用
-
-在 OpenClaw 对话中：
-
-```
-用户: 帮我加入狼人杀房间 test-room-123
-Agent: ✓ 已加入游戏，等待开始...
-       你的角色是 **预言家**
+# 或直接运行 Python 脚本
+python werewolf_agent.py --room-id abc123 --api-key sk-xxx
 ```
 
 ## 项目结构
 
 ```
-werewolf-openclaw-skill/
-├── SKILL.md              # OpenClaw Skill 定义
+werewolf-agent/
+├── SKILL.md              # OpenClaw Skill 核心文件
 ├── werewolf_agent.py     # Agent 主进程
-├── strategy_basic.py     # 规则驱动策略
-├── strategy_llm.py       # LLM 增强策略
 ├── memory.py             # 游戏状态管理
-├── prompts/              # Prompt 模板
-│   ├── speech.txt
-│   ├── reasoning.txt
-│   └── decision.txt
-└── examples/             # 示例脚本
-    └── start_agent.sh
+├── logger.py             # 日志模块
+├── strategy/
+│   ├── __init__.py
+│   ├── base.py           # 策略基类
+│   ├── basic.py          # 规则驱动策略 (P0)
+│   └── validator.py      # 行动校验器
+├── prompts/
+│   ├── speech.txt        # 发言生成模板
+│   ├── reasoning.txt     # 推理分析模板 (P1)
+│   └── decision.txt      # 决策模板 (P1)
+├── config/
+│   └── default.yaml      # 默认配置
+├── examples/
+│   └── start_agent.sh    # 启动脚本
+└── README.md
 ```
 
-## 开发
+## 功能特性
+
+### P0 - MVP（当前版本）
+
+- ✅ 规则驱动策略（随机 + 约束）
+- ✅ 完整的游戏流程支持
+- ✅ 行动校验层（防止非法操作）
+- ✅ 状态持久化和归档
+- ✅ 结构化日志
+
+### P1 - 推理增强（计划中）
+
+- 🔲 LLM 增强策略
+- 🔲 身份概率估计
+- 🔲 智能发言生成
+
+## 架构说明
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    用户对话层 (OpenClaw)                      │
+│                  "帮我加入房间 abc123"                        │
+└─────────────────────────────┬───────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     SKILL.md (OpenClaw)                      │
+│              理解意图 → 收集参数 → 调用 bash 工具              │
+└─────────────────────────────┬───────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   werewolf_agent.py                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
+│  │ Mock SDK     │  │ EventHandler │  │  BasicStrategy   │   │
+│  │ (P0)         │──▶│   Router     │──▶│  (规则驱动)      │   │
+│  └──────────────┘  └──────────────┘  └────────┬─────────┘   │
+│                                               │              │
+│                              ┌────────────────▼───────────┐  │
+│                              │        GameMemory          │  │
+│                              │   (状态管理 + 持久化)       │  │
+│                              └────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## 命令行参数
+
+| 参数 | 说明 | 必填 | 默认值 |
+|------|------|:----:|--------|
+| `--room-id` | 房间 ID | ✅ | - |
+| `--api-key` | API Key | ✅ | - |
+| `--server-url` | 服务器地址 | ❌ | localhost:8000 |
+| `--strategy` | 策略类型 | ❌ | basic |
+| `--speech-style` | 发言风格 | ❌ | formal |
+| `--log-file` | 日志文件 | ❌ | ~/.openclaw/logs/werewolf-agent.log |
+
+## 日志格式
+
+```
+[2024-03-24 16:00:00] [INFO] [EVENT] 游戏开始，角色=预言家
+[2024-03-24 16:00:10] [INFO] [ACTION] 查验 5 号玩家
+[2024-03-24 16:01:00] [INFO] [ACTION] 已提交发言: 我是预言家...
+[2024-03-24 16:02:00] [INFO] [ACTION] 投票给 7 号玩家
+[2024-03-24 16:03:00] [INFO] [EVENT] 游戏结束，好人获胜
+```
+
+## 配置文件
+
+配置文件位置：`~/.openclaw/config/werewolf-agent.yaml`
+
+```yaml
+api_key: "your-api-key"
+server_url: "localhost:8000"
+strategy: "basic"
+speech_style: "formal"
+```
+
+## 开发说明
 
 ### 运行测试
 
 ```bash
-# 单元测试
-pytest tests/
+# 验证模块导入
+python -c "from memory import GameMemory; print('OK')"
+python -c "from strategy import BasicStrategy; print('OK')"
+python -c "from logger import AgentLogger; print('OK')"
 
-# 手动测试
-python werewolf_agent.py --room-id test --api-key YOUR_KEY
+# 运行 Agent（使用 Mock 客户端）
+python werewolf_agent.py --room-id test --api-key test
 ```
 
-### 调试
+### 添加新策略
 
-```bash
-# 查看实时日志
-tail -f ~/.openclaw/logs/werewolf-agent.log
+1. 继承 `StrategyBase` 类
+2. 实现 `night_action`, `generate_speech`, `vote_target` 方法
+3. 在 `werewolf_agent.py` 中注册
 
-# 查询 Agent 状态
-cat ~/.openclaw/logs/werewolf-agent.pid
-```
+## 相关链接
 
-## 架构
+- [设计文档](docs/design.md)
+- [Werewolf Arena 平台](https://github.com/slob-coder/werewolf-game)
+- [OpenClaw](https://github.com/slob-coder/openclaw)
 
-```
-OpenClaw 对话 ──► SKILL.md ──► bash 工具 ──► werewolf_agent.py
-                      │                           │
-                      │                           ├── WebSocket 连接
-                      │                           ├── 事件处理
-                      │                           └── LLM 推理
-                      │
-                      └── 日志查询 ──◄── 状态报告
-```
-
-## 分阶段交付
-
-| 阶段 | 功能 | 状态 |
-|------|------|------|
-| P0 | 规则驱动 + LLM 发言 | 🚧 开发中 |
-| P1 | LLM 推理决策 | 📋 计划中 |
-| P2 | 跨局学习、风格配置 | 📋 计划中 |
-
-## 相关项目
-
-- [Werewolf Arena](https://github.com/slob-coder/werewolf-game) - 狼人杀游戏平台
-- [OpenClaw](https://openclaw.ai) - AI Agent 平台
-
-## 许可证
+## License
 
 MIT
-
----
-
-*更多信息请参阅 [AGENTS.md](./AGENTS.md)*
