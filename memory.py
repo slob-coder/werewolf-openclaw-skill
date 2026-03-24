@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ⚠️ DEPRECATED (V1) — V2 中由 OpenClaw Session 自动管理游戏状态，无需此模块。
 """
 游戏状态管理模块
 
