@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ⚠️ DEPRECATED (V1) — V2 中策略由 SKILL.md 定义，由 OpenClaw Agent 执行。
 """
 策略引擎模块
 

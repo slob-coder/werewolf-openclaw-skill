@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# ⚠️ DEPRECATED (V1) — 此文件已被 V2 ws_bridge.py 替代。
+# V2 使用 Webhook Bridge 架构，所有推理由 OpenClaw Agent 完成。
+# 保留此文件仅供回退参考，不再作为主入口。
 """
 Werewolf Arena Agent - OpenClaw Skill 后台进程
 
