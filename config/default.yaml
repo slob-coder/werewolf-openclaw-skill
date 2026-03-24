@@ -1,0 +1,42 @@
+# Werewolf Arena Agent 默认配置
+
+# API 配置
+api:
+  server_url: "localhost:8000"
+  timeout: 30
+
+# 游戏配置
+game:
+  strategy: "basic"  # basic | llm
+  speech_style: "formal"  # formal | casual
+
+# 策略配置
+strategy:
+  basic:
+    # 规则驱动策略参数
+    random_seed: null  # null 表示使用真随机
+
+  llm:
+    # LLM 策略参数 (P1)
+    model: "claude-sonnet-4-6"
+    temperature: 0.7
+    max_tokens: 1024
+    timeout: 30
+
+# 行动超时配置（秒）
+timeout:
+  night_action: 60
+  speech: 90
+  vote: 60
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "~/.openclaw/logs/werewolf-agent.log"
+  max_size_mb: 10
+  backup_count: 5
+
+# 重连配置
+reconnect:
+  max_attempts: 5
+  base_delay: 5  # 秒
