@@ -1,155 +1,221 @@
-# Werewolf Arena Agent
+# Werewolf Arena — OpenClaw Skill
 
-> OpenClaw Skill - 通过自然语言对话，一键启动智能 Agent 参与狼人杀游戏
+> 通过 OpenClaw 聊天界面，智能参与狼人杀游戏。实时分析局势、自动决策、推送战报。
 
-## 快速开始
+## 架构版本
 
-### 1. 通过 OpenClaw 启动
+本项目有两套架构，可按需切换：
 
-```
-用户：帮我加入房间 abc123
-OpenClaw：好的，请提供你的 API Key...
-用户：sk-xxx
-OpenClaw：✓ Agent 已启动，已加入房间 abc123
-```
+| | V1（独立 Agent） | V2（Webhook Bridge）✨ |
+|---|---|---|
+| **推理引擎** | Python 进程独立调 Anthropic API | OpenClaw Agent 自身推理 |
+| **通信方式** | 日志文件轮询 | Webhook POST 同步推送 |
+| **策略定义** | `strategy_basic.py` + `prompts/*.txt` | `SKILL.md` 角色策略手册 |
+| **状态管理** | `memory.py` GameMemory 类 | OpenClaw Session 自动积累 |
+| **用户感知** | 被动查日志 | 聊天界面实时推送 |
+| **API 成本** | 双重（OpenClaw + Anthropic） | 单一（仅 OpenClaw） |
+| **代码量** | ~500 行 | ~150 行 |
+| **依赖** | werewolf-sdk, anthropic, pyyaml | httpx, websockets |
 
-### 2. 通过命令行启动
+---
+
+## V2 快速开始
+
+### 前置条件
+
+1. **OpenClaw Gateway** 已运行且启用 Webhook
+2. **Python 3.11+**
+3. **Werewolf Arena 游戏服务器** 可访问
+
+### Step 1: 安装依赖
 
 ```bash
-# 安装依赖
-pip install pyyaml
+pip install httpx websockets
+```
 
-# 启动 Agent
-./examples/start_agent.sh --room-id abc123 --api-key sk-xxx
+### Step 2: 配置 OpenClaw Webhook
 
-# 或直接运行 Python 脚本
+在 `~/.openclaw/openclaw.json` 中添加：
+
+```json5
+{
+  "hooks": {
+    "enabled": true,
+    "token": "<生成一个强随机 token>",
+    "allowRequestSessionKey": true,
+    "allowedSessionKeyPrefixes": ["hook:werewolf:"]
+  }
+}
+```
+
+重启 Gateway 使配置生效：
+
+```bash
+openclaw gateway restart
+```
+
+### Step 3: 安装 Skill
+
+将 `SKILL.md` 放置到 OpenClaw 技能目录：
+
+```bash
+# 默认 agent
+mkdir -p ~/.openclaw/workspace/skills/werewolf-agent
+cp SKILL.md ~/.openclaw/workspace/skills/werewolf-agent/
+cp ws_bridge.py ~/.openclaw/workspace/skills/werewolf-agent/
+
+# 或使用专属 agent（推荐）
+mkdir -p ~/.openclaw/workspace-werewolf/skills/werewolf-agent
+cp SKILL.md ~/.openclaw/workspace-werewolf/skills/werewolf-agent/
+cp ws_bridge.py ~/.openclaw/workspace-werewolf/skills/werewolf-agent/
+```
+
+### Step 4: 通过对话启动
+
+在 OpenClaw 聊天中：
+
+```
+你：帮我加入狼人杀，房间 abc123
+Agent：好的，请提供你的 Werewolf Arena API Key...
+你：sk-xxx
+Agent：✅ Bridge 已启动，连接房间 abc123。游戏事件将自动推送到这里。
+```
+
+### 手动启动（可选）
+
+```bash
+python ws_bridge.py \
+  --room-id abc123 \
+  --game-api-key sk-xxx \
+  --game-server localhost:8000 \
+  --openclaw-gateway 127.0.0.1:18789 \
+  --openclaw-hook-token <your-hook-token>
+```
+
+---
+
+## V2 项目结构
+
+```
+werewolf-openclaw-skill/
+├── SKILL.md              # 角色策略手册（推理框架 + 角色策略 + 响应格式）
+├── ws_bridge.py          # Webhook Bridge（~150行，纯 I/O）
+├── README.md             # 本文件
+├── examples/
+│   ├── start_bridge.sh   # V2 Bridge 启动脚本
+│   └── start_agent.sh    # V1 Agent 启动脚本
+│
+│ ── V1 文件（保留，不再是主入口）──
+├── werewolf_agent.py     # V1 Agent 主进程
+├── strategy/             # V1 策略模块
+├── memory.py             # V1 GameMemory
+├── prompts/              # V1 Prompt 模板
+├── logger.py             # V1 日志模块
+├── config/               # V1 配置
+└── docs/                 # 设计文档
+```
+
+---
+
+## V2 架构说明
+
+```
+Werewolf Game Server
+    │  WebSocket 长连接
+    ▼
+┌────────────────────────────────────┐
+│  ws_bridge.py（~150 行，纯 I/O）    │
+│  ├─ 维持 WebSocket 长连接           │
+│  ├─ 格式化游戏事件为自然语言         │
+│  ├─ POST /hooks/agent 推送到 Agent  │
+│  ├─ 解析 Agent 回复中的 JSON 决策   │
+│  ├─ 提交行动到游戏 REST API         │
+│  └─ 超时降级（随机合法行动）         │
+└────────────────┬───────────────────┘
+                 │  HTTP POST
+                 ▼
+┌────────────────────────────────────┐
+│  OpenClaw Gateway                  │
+│  ├─ Webhook 接收事件               │
+│  ├─ Agent 推理（读取 SKILL.md）     │
+│  ├─ Session 自动积累上下文          │
+│  ├─ 返回决策 JSON 给 ws_bridge     │
+│  └─ 推送分析到用户聊天界面          │
+└────────────────────────────────────┘
+```
+
+---
+
+## V1 / V2 切换
+
+### 使用 V2（推荐）
+
+1. 确保 OpenClaw Webhook 已配置
+2. 使用新版 `SKILL.md`（角色策略手册）
+3. 启动 `ws_bridge.py`
+
+### 回退到 V1
+
+1. 恢复旧版 `SKILL.md`（进程管理指令版本，见 git 历史 `v0.1.0` tag）
+2. 安装 V1 依赖：`pip install werewolf-sdk anthropic pyyaml`
+3. 设置 `ANTHROPIC_API_KEY` 环境变量
+4. 启动 `werewolf_agent.py`
+
+```bash
+# V1 启动
+export ANTHROPIC_API_KEY=sk-xxx
 python werewolf_agent.py --room-id abc123 --api-key sk-xxx
 ```
 
-## 项目结构
+---
 
-```
-werewolf-agent/
-├── SKILL.md              # OpenClaw Skill 核心文件
-├── werewolf_agent.py     # Agent 主进程
-├── memory.py             # 游戏状态管理
-├── logger.py             # 日志模块
-├── strategy/
-│   ├── __init__.py
-│   ├── base.py           # 策略基类
-│   ├── basic.py          # 规则驱动策略 (P0)
-│   └── validator.py      # 行动校验器
-├── prompts/
-│   ├── speech.txt        # 发言生成模板
-│   ├── reasoning.txt     # 推理分析模板 (P1)
-│   └── decision.txt      # 决策模板 (P1)
-├── config/
-│   └── default.yaml      # 默认配置
-├── examples/
-│   └── start_agent.sh    # 启动脚本
-└── README.md
-```
+## 依赖变更
 
-## 功能特性
-
-### P0 - MVP（当前版本）
-
-- ✅ 规则驱动策略（随机 + 约束）
-- ✅ 完整的游戏流程支持
-- ✅ 行动校验层（防止非法操作）
-- ✅ 状态持久化和归档
-- ✅ 结构化日志
-
-### P1 - 推理增强（计划中）
-
-- 🔲 LLM 增强策略
-- 🔲 身份概率估计
-- 🔲 智能发言生成
-
-## 架构说明
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    用户对话层 (OpenClaw)                      │
-│                  "帮我加入房间 abc123"                        │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     SKILL.md (OpenClaw)                      │
-│              理解意图 → 收集参数 → 调用 bash 工具              │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   werewolf_agent.py                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
-│  │ Mock SDK     │  │ EventHandler │  │  BasicStrategy   │   │
-│  │ (P0)         │──▶│   Router     │──▶│  (规则驱动)      │   │
-│  └──────────────┘  └──────────────┘  └────────┬─────────┘   │
-│                                               │              │
-│                              ┌────────────────▼───────────┐  │
-│                              │        GameMemory          │  │
-│                              │   (状态管理 + 持久化)       │  │
-│                              └────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## 命令行参数
-
-| 参数 | 说明 | 必填 | 默认值 |
-|------|------|:----:|--------|
-| `--room-id` | 房间 ID | ✅ | - |
-| `--api-key` | API Key | ✅ | - |
-| `--server-url` | 服务器地址 | ❌ | localhost:8000 |
-| `--strategy` | 策略类型 | ❌ | basic |
-| `--speech-style` | 发言风格 | ❌ | formal |
-| `--log-file` | 日志文件 | ❌ | ~/.openclaw/logs/werewolf-agent.log |
-
-## 日志格式
-
-```
-[2024-03-24 16:00:00] [INFO] [EVENT] 游戏开始，角色=预言家
-[2024-03-24 16:00:10] [INFO] [ACTION] 查验 5 号玩家
-[2024-03-24 16:01:00] [INFO] [ACTION] 已提交发言: 我是预言家...
-[2024-03-24 16:02:00] [INFO] [ACTION] 投票给 7 号玩家
-[2024-03-24 16:03:00] [INFO] [EVENT] 游戏结束，好人获胜
-```
-
-## 配置文件
-
-配置文件位置：`~/.openclaw/config/werewolf-agent.yaml`
-
-```yaml
-api_key: "your-api-key"
-server_url: "localhost:8000"
-strategy: "basic"
-speech_style: "formal"
-```
-
-## 开发说明
-
-### 运行测试
+| 依赖 | V1 | V2 |
+|------|:--:|:--:|
+| `httpx` | — | ✅ |
+| `websockets` | — | ✅ |
+| `werewolf-sdk` | ✅ | — |
+| `anthropic` | ✅ | — |
+| `pyyaml` | ✅ | — |
 
 ```bash
-# 验证模块导入
-python -c "from memory import GameMemory; print('OK')"
-python -c "from strategy import BasicStrategy; print('OK')"
-python -c "from logger import AgentLogger; print('OK')"
+# V2 安装
+pip install httpx websockets
 
-# 运行 Agent（使用 Mock 客户端）
-python werewolf_agent.py --room-id test --api-key test
+# V1 安装（如需回退）
+pip install werewolf-sdk anthropic pyyaml
 ```
 
-### 添加新策略
+---
 
-1. 继承 `StrategyBase` 类
-2. 实现 `night_action`, `generate_speech`, `vote_target` 方法
-3. 在 `werewolf_agent.py` 中注册
+## 可选：注册专属 Agent
+
+在 `~/.openclaw/openclaw.json` 中注册专属 werewolf agent：
+
+```json5
+{
+  "agents": {
+    "list": [
+      {
+        "id": "werewolf",
+        "name": "Werewolf Strategist",
+        "model": "anthropic/claude-sonnet-4-6",
+        "workspace": "~/.openclaw/workspace-werewolf"
+      }
+    ]
+  }
+}
+```
+
+未注册时由默认 agent 处理，也能正常工作。
+
+---
 
 ## 相关链接
 
-- [设计文档](docs/design.md)
+- [V2 设计文档](docs/design/v2-design.md)
+- [V1 设计文档](docs/design/v1-design.md)
 - [Werewolf Arena 平台](https://github.com/slob-coder/werewolf-game)
 - [OpenClaw](https://github.com/slob-coder/openclaw)
 
