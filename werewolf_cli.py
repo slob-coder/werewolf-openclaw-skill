@@ -343,12 +343,118 @@ async def handle_login(args: argparse.Namespace) -> None:
         print(f"✅ 登录成功，token 已更新")
 
 
+async def refresh_jwt_by_access_key(server: str, access_key: str) -> str | None:
+    """Exchange access_key for JWT token."""
+    base = f"{server}/api/v1"
+    async with httpx.AsyncClient() as http:
+        try:
+            resp = await http.post(f"{base}/auth/token-by-access-key", json={
+                "access_key": access_key,
+            })
+            if resp.status_code == 200:
+                return resp.json().get("access_token")
+            else:
+                print(f"❌ Access Key 认证失败: {resp.text}")
+                return None
+        except Exception as e:
+            print(f"❌ 连接失败: {e}")
+            return None
+
+
+async def handle_init(args: argparse.Namespace) -> None:
+    """Initialize with access_key: get JWT → create/get agent → save credentials."""
+    server = args.server.rstrip("/")
+    access_key = args.access_key
+    base = f"{server}/api/v1"
+
+    async with httpx.AsyncClient() as http:
+        # Step 1: Exchange access_key for JWT
+        print(f"🔑 使用 Access Key 认证...")
+        jwt_token = await refresh_jwt_by_access_key(server, access_key)
+        if not jwt_token:
+            return
+        print(f"✅ 认证成功")
+
+        # Step 2: Get user info
+        print(f"📋 获取用户信息...")
+        resp = await http.get(f"{base}/auth/me", headers={"Authorization": f"Bearer {jwt_token}"})
+        if resp.status_code != 200:
+            print(f"❌ 获取用户信息失败: {resp.text}")
+            return
+        user = resp.json()
+        username = user.get("username", "unknown")
+        print(f"✅ 用户: {username}")
+
+        # Step 3: Check if agent already configured
+        creds = load_creds()
+        existing_agent_id = creds.get("agent_id")
+
+        if existing_agent_id:
+            # Verify the agent exists and belongs to this user
+            resp = await http.get(f"{base}/agents/{existing_agent_id}",
+                                   headers={"Authorization": f"Bearer {jwt_token}"})
+            if resp.status_code == 200:
+                agent_data = resp.json()
+                api_key = agent_data.get("api_key") or creds.get("api_key")
+                print(f"✅ 使用已有 Agent: {existing_agent_id}")
+            else:
+                # Agent not found, create new one
+                existing_agent_id = None
+
+        if not existing_agent_id:
+            # Step 4: List existing agents or create new one
+            print(f"🤖 查找/创建 Agent...")
+            resp = await http.get(f"{base}/agents", headers={"Authorization": f"Bearer {jwt_token}"})
+            agents = resp.json() if resp.status_code == 200 else []
+
+            if agents:
+                # Use first existing agent
+                agent_data = agents[0]
+                agent_id = agent_data.get("id")
+                api_key = agent_data.get("api_key")
+                print(f"✅ 使用已有 Agent: {agent_id}")
+            else:
+                # Create new agent
+                agent_name = args.agent_name or f"{username}-agent"
+                resp = await http.post(f"{base}/agents", json={
+                    "name": agent_name,
+                    "description": f"OpenClaw Werewolf Agent ({username})",
+                }, headers={"Authorization": f"Bearer {jwt_token}"})
+
+                if resp.status_code != 201:
+                    print(f"❌ 创建 Agent 失败: {resp.text}")
+                    return
+                agent_data = resp.json()
+                agent_id = agent_data.get("id")
+                api_key = agent_data.get("api_key")
+                print(f"✅ Agent 创建成功")
+                print(f"   Agent ID:  {agent_id}")
+                print(f"   API Key:   {api_key}")
+                print(f"   ⚠️  API Key 仅显示一次，请妥善保存！")
+
+            existing_agent_id = agent_id
+
+        # Step 5: Save credentials
+        creds = {
+            "server": server,
+            "username": username,
+            "access_key": access_key,
+            "jwt_token": jwt_token,
+            "agent_id": existing_agent_id,
+            "api_key": api_key,
+        }
+        save_creds(creds)
+        print(f"\n✅ 凭据已保存到 {CRED_FILE}")
+        print(f"   后续命令将自动使用这些凭据。")
+
+
 async def handle_create_room(args: argparse.Namespace) -> None:
     """Create a game room (requires JWT)."""
     creds = load_creds()
     jwt_token = creds.get("jwt_token")
+    access_key = creds.get("access_key")
     if not jwt_token:
-        print("❌ 未登录。请先执行: werewolf_cli.py setup 或 werewolf_cli.py login")
+        print("❌ 未登录。请先执行: werewolf_cli.py init --access-key <your_access_key>")
         return
 
     server = _get_server(args)
@@ -365,6 +471,20 @@ async def handle_create_room(args: argparse.Namespace) -> None:
             "auto_start": True,
         }, headers={"Authorization": f"Bearer {jwt_token}"})
 
+        # Auto-refresh JWT if expired
+        if resp.status_code == 401 and access_key:
+            print("🔄 JWT 已过期，使用 Access Key 刷新...")
+            jwt_token = await refresh_jwt_by_access_key(server, access_key)
+            if jwt_token:
+                creds["jwt_token"] = jwt_token
+                save_creds(creds)
+                resp = await http.post(f"{base}/rooms", json={
+                    "name": name,
+                    "player_count": player_count,
+                    "role_preset": preset,
+                    "auto_start": True,
+                }, headers={"Authorization": f"Bearer {jwt_token}"})
+
         if resp.status_code == 201:
             room = resp.json()
             room_id = room.get("id")
@@ -376,7 +496,7 @@ async def handle_create_room(args: argparse.Namespace) -> None:
             api_key = creds.get("api_key", "<你的API Key>")
             print(f"   python3 bridge.py --room-id {room_id} --api-key {api_key} ...")
         elif resp.status_code == 401:
-            print("❌ JWT 过期。请执行: werewolf_cli.py login --username <用户名> --password <密码>")
+            print("❌ 认证失败。请执行: werewolf_cli.py init --access-key <your_access_key>")
         else:
             print(f"❌ 创建失败 ({resp.status_code}): {resp.text}")
 
@@ -415,11 +535,15 @@ async def handle_show_creds(_args: argparse.Namespace) -> None:
     """Show saved credentials."""
     creds = load_creds()
     if not creds:
-        print("📭 未找到凭据。请先执行: werewolf_cli.py setup")
+        print("📭 未找到凭据。请先执行: werewolf_cli.py init --access-key <your_access_key>")
         return
     print("🔐 已保存凭据:\n")
     print(f"  服务器:    {creds.get('server', '?')}")
     print(f"  用户名:    {creds.get('username', '?')}")
+    access_key = creds.get("access_key", "")
+    if access_key:
+        masked = access_key[:8] + "..." + access_key[-4:] if len(access_key) > 12 else access_key
+        print(f"  Access Key: {masked}")
     print(f"  Agent ID:  {creds.get('agent_id', '?')}")
     api_key = creds.get("api_key", "")
     masked = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else api_key
@@ -442,12 +566,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── Setup commands (no bridge needed) ──
 
-    sp = sub.add_parser("setup", help="一键初始化: 注册用户 + 创建Agent + 保存凭据")
+    sp = sub.add_parser("init", help="使用 Access Key 初始化: 获取 JWT → 创建/获取 Agent → 保存凭据")
+    sp.add_argument("--server", required=True, help="游戏服务器地址")
+    sp.add_argument("--access-key", required=True, help="用户 Access Key (从 Web 界面获取)")
+    sp.add_argument("--agent-name", default=None, help="Agent 名称 (默认: 用户名-agent)")
+
+    sp = sub.add_parser("setup", help="[已废弃] 旧版初始化命令，请使用 init")
     sp.add_argument("--username", required=True, help="用户名")
     sp.add_argument("--password", required=True, help="密码")
     sp.add_argument("--agent-name", default=None, help="Agent 名称 (默认: 用户名-agent)")
 
-    sp = sub.add_parser("login", help="登录刷新 JWT token")
+    sp = sub.add_parser("login", help="[已废弃] 旧版登录命令，请使用 init")
     sp.add_argument("--username", required=True, help="用户名")
     sp.add_argument("--password", required=True, help="密码")
 
@@ -487,7 +616,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # Commands that don't need bridge/game context
-SETUP_COMMANDS = {"setup", "login", "create-room", "list-rooms", "creds"}
+SETUP_COMMANDS = {"init", "setup", "login", "create-room", "list-rooms", "creds"}
 QUERY_COMMANDS = {"status", "alive"}
 ACTION_COMMANDS = set(COMMAND_MAP.keys()) | {"save", "skip"}
 
@@ -501,10 +630,15 @@ def main() -> None:
         sys.exit(1)
 
     # Setup commands — no bridge needed
+    if args.command == "init":
+        asyncio.run(handle_init(args))
+        return
     if args.command == "setup":
+        print("⚠️  setup 命令已废弃，请使用: werewolf_cli.py init --server <url> --access-key <key>")
         asyncio.run(handle_setup(args))
         return
     if args.command == "login":
+        print("⚠️  login 命令已废弃，请使用: werewolf_cli.py init --server <url> --access-key <key>")
         asyncio.run(handle_login(args))
         return
     if args.command == "create-room":
