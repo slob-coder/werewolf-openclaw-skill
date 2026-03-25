@@ -96,6 +96,50 @@ curl -s http://<server-ip>:<server-port>/api/v1/health
 {"status":"ok","service":"werewolf-arena","version":"0.1.0"}
 ```
 
+### 7. 配置 OpenClaw 识别 Skill
+
+**重要**：需要在 OpenClaw 配置中注册 skill，否则 OpenClaw 无法识别。
+
+编辑 `~/.openclaw/openclaw.json`，在 `skills.entries` 中添加 `werewolf-agent`：
+
+```json
+{
+  "skills": {
+    "entries": {
+      "werewolf-agent": {}
+    }
+  }
+}
+```
+
+完整示例：
+
+```json
+{
+  "skills": {
+    "entries": {
+      "nano-banana-pro": {
+        "apiKey": "..."
+      },
+      "homeassistant-skill": {
+        "apiKey": "..."
+      },
+      "werewolf-agent": {}
+    }
+  }
+}
+```
+
+### 8. 重启 OpenClaw Gateway
+
+```bash
+# 停止 Gateway
+pkill -f 'openclaw-gateway'
+
+# 启动 Gateway
+openclaw gateway start
+```
+
 ## 获取凭据
 
 ### 方法一：使用 CLI 初始化（推荐）
