@@ -39,6 +39,17 @@ CONTEXT_DIR = Path("/tmp/werewolf_arena")
 SKILL_DIR = Path("~/.openclaw/workspace/skills/werewolf-agent").expanduser()
 WCLI = f"python3 {SKILL_DIR}/werewolf_cli.py"
 
+# Credentials file (shared with werewolf_cli.py)
+CRED_DIR = Path.home() / ".werewolf-arena"
+CRED_FILE = CRED_DIR / "credentials.json"
+
+
+def load_creds() -> dict:
+    """Load credentials from ~/.werewolf-arena/credentials.json"""
+    if CRED_FILE.exists():
+        return json.loads(CRED_FILE.read_text())
+    return {}
+
 
 def _context_path(room_id: str) -> Path:
     return CONTEXT_DIR / f"context_{room_id}.json"
@@ -434,8 +445,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--room-id", required=True, help="Game room ID")
     p.add_argument("--game-id", default=None,
                    help="Game ID (if omitted, bridge will auto-start when all players ready)")
-    p.add_argument("--api-key", required=True, help="Werewolf Arena Agent API key")
-    p.add_argument("--server", default="http://localhost:8000", help="Game server URL")
+    p.add_argument("--api-key", default=None, help="Werewolf Arena Agent API key (default: from credentials.json)")
+    p.add_argument("--server", default=None, help="Game server URL (default: from credentials.json)")
     p.add_argument("--openclaw-gateway", default="127.0.0.1:18789", help="OpenClaw Gateway host:port")
     p.add_argument("--openclaw-hook-token", required=True, help="OpenClaw webhook token")
     p.add_argument("--openclaw-agent-id", default=None, help="OpenClaw agent ID")
@@ -558,6 +569,16 @@ async def _find_game_id_for_room(
 async def main() -> None:
     args = parse_args()
 
+    # Load credentials if not provided
+    creds = load_creds()
+    if not args.api_key:
+        args.api_key = creds.get("api_key")
+        if not args.api_key:
+            print("❌ 错误: 未提供 API Key，且 credentials.json 中也没有。请先运行: werewolf_cli.py init")
+            return
+    if not args.server:
+        args.server = creds.get("server", "http://localhost:8000")
+
     webhook = WebhookClient(
         gateway=args.openclaw_gateway,
         token=args.openclaw_hook_token,
@@ -575,8 +596,14 @@ async def main() -> None:
 
     try:
         # ── Phase 1: Join room (REST) ──
-        result = await agent.join_room(args.room_id)
-        log.info("Joined room %s at seat %s", args.room_id, result.get("seat"))
+        try:
+            result = await agent.join_room(args.room_id)
+            log.info("Joined room %s at seat %s", args.room_id, result.get("seat"))
+        except Exception as e:
+            if "already in this room" in str(e):
+                log.info("Already in room %s, continuing...", args.room_id)
+            else:
+                raise
 
         # ── Phase 2: Mark ready (REST) ──
         await agent.rest.toggle_ready(args.room_id)
