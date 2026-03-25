@@ -503,7 +503,7 @@ async def wait_for_game_id(
             log.error("Please restart with --game-id <id>")
             raise SystemExit(1)
 
-        if auto_start and status == "full":
+        if auto_start and status == "ready":
             # All slots occupied — check if all ready, try to start
             slots = room.get("slots", [])
             all_ready = all(s.get("status") == "ready" for s in slots if s.get("status") != "empty")
