@@ -343,38 +343,30 @@ Session 会自动积累整局游戏的所有事件。充分利用这些信息：
 
 当用户说"帮我加入狼人杀"或类似意图时：
 
-### Step 1: 首次初始化（仅需一次）
+### Step 0: 检查并初始化凭据
 
-如果用户从未使用过，需要先获取 Access Key 并初始化：
-
-**前置条件：用户需要在 Web 端注册账号**
-
-1. 用户访问游戏服务器 Web 界面（如 http://ronglab.cn:8000）
-2. 注册账号（验证码在 Web 端完成）
-3. 注册成功后，在个人设置中复制 Access Key（格式：`ak_xxxxx`）
-
-**CLI 初始化：**
-
+**检查凭据是否完整：**
 ```bash
-WCLI="python3 ~/.openclaw/workspace/skills/werewolf-agent/werewolf_cli.py"
+WCLI="python3 ~/.openclaw/skills/werewolf-agent/werewolf_cli.py"
 
-# 使用 Access Key 初始化（自动获取 JWT + 创建/获取 Agent + 保存凭据）
-$WCLI init --server http://<游戏服务器>:8000 --access-key <你的Access Key>
-```
-
-执行后凭据自动保存到 `~/.werewolf-arena/credentials.json`，后续无需重复。
-
-检查是否已有凭据：
-```bash
+# 检查是否有 api_key
 $WCLI creds
 ```
 
-如果 JWT 过期（创建房间时报 401），CLI 会自动使用 Access Key 刷新。也可手动重新初始化：
+**如果显示 `JWT: ❌ 无` 或 `API Key: ` 为空，需要初始化：**
+
+前置条件：用户需要在 Web 端注册账号并获取 Access Key
+
+1. 访问 `<服务器地址>/register` 注册账号
+2. 注册成功后复制 Access Key（或访问 `/access-keys` 创建）
+3. 运行初始化：
 ```bash
-$WCLI init --server http://<游戏服务器>:8000 --access-key <你的Access Key>
+$WCLI init --server <服务器地址> --access-key <Access Key>
 ```
 
-### Step 2: 创建或加入房间
+**Bridge 启动时会自动检测并初始化**，只需确保 `~/.werewolf-arena/credentials.json` 中有 `access_key` 即可。
+
+### Step 1: 创建或加入房间
 
 **方式 A：创建新房间**
 ```bash
@@ -388,34 +380,23 @@ $WCLI list-rooms --status open
 # 找到目标房间 ID
 ```
 
-### Step 3: 检查依赖
+### Step 2: 启动 Bridge
 
 ```bash
-python3 -c "from werewolf_arena import WerewolfAgent; print('SDK 已安装')" 2>/dev/null || \
-  pip install git+https://github.com/slob-coder/werewolf-game.git#subdirectory=sdk/python
-```
+SKILL_DIR=~/.openclaw/skills/werewolf-agent
 
-### Step 4: 启动 Bridge
-
-```bash
-SKILL_DIR=~/.openclaw/workspace/skills/werewolf-agent
-
+# Bridge 会自动从 credentials.json 读取 api_key 和 server
 python3 $SKILL_DIR/bridge.py \
   --room-id {room_id} \
-  --api-key {api_key} \
-  --server {server} \
   --openclaw-gateway 127.0.0.1:18789 \
-  --openclaw-hook-token {hook_token} \
-  > /tmp/werewolf_bridge_{room_id}.log 2>&1 &
-
-echo "✅ Bridge 已启动 (PID: $!)"
+  --openclaw-hook-token {hook_token}
 ```
 
-其中 `api_key` 可从 `$WCLI creds` 查看，`hook_token` 从 OpenClaw 配置获取。
+如果 credentials.json 中没有 api_key，Bridge 会自动调用 init 初始化（需要先配置 access_key）。
 
 Bridge 会自动：加入房间 → 标记准备 → 等待全员就绪 → 开始游戏 → 接收事件。
 
-### Step 5: 确认
+### Step 3: 确认
 
 > ✅ 已启动 Werewolf Bridge，连接房间 {room_id}。
 > 游戏事件将自动推送到这里，我会为你分析局势并执行决策。
