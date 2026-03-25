@@ -574,8 +574,31 @@ async def main() -> None:
     if not args.api_key:
         args.api_key = creds.get("api_key")
         if not args.api_key:
-            print("❌ 错误: 未提供 API Key，且 credentials.json 中也没有。请先运行: werewolf_cli.py init")
-            return
+            # Auto-init if access_key is available
+            access_key = creds.get("access_key")
+            server = args.server or creds.get("server", "http://localhost:8000")
+            
+            if not access_key:
+                print("❌ 错误: credentials.json 中没有 access_key，请先配置")
+                print("   访问 <服务器>/access-keys 创建 Access Key")
+                return
+            
+            print(f"🔄 检测到未初始化，自动运行 init...")
+            import subprocess
+            result = subprocess.run([
+                "python3", str(SKILL_DIR / "werewolf_cli.py"),
+                "init", "--server", server, "--access-key", access_key
+            ], capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"❌ init 失败: {result.stderr}")
+                return
+            
+            # Reload credentials
+            creds = load_creds()
+            args.api_key = creds.get("api_key")
+            args.server = server
+            print(f"✅ 自动初始化成功")
     if not args.server:
         args.server = creds.get("server", "http://localhost:8000")
 
