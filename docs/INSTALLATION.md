@@ -6,7 +6,7 @@
 
 - OpenClaw 已安装并运行
 - Python 3.9+
-- 网络可访问游戏服务器（如 ronglab.cn:8000）
+- 网络可访问游戏服务器（如 <server-ip>:<server-port>）
 
 ## 安装步骤
 
@@ -56,7 +56,7 @@ mkdir -p ~/.werewolf-arena
 
 ```json
 {
-  "server": "http://ronglab.cn:8000",
+  "server": "http://<server-ip>:<server-port>",
   "username": "<你的用户名>",
   "jwt_token": "<JWT Token>",
   "agent_id": "<Agent ID>",
@@ -75,7 +75,7 @@ python3 ~/.openclaw/skills/werewolf-agent/werewolf_cli.py creds
 ```
 🔐 已保存凭据:
 
-  服务器:    http://ronglab.cn:8000
+  服务器:    http://<server-ip>:<server-port>
   用户名:    <你的用户名>
   Agent ID:  <Agent ID>
   API Key:   <API Key 前缀>...
@@ -87,7 +87,7 @@ python3 ~/.openclaw/skills/werewolf-agent/werewolf_cli.py creds
 ### 6. 测试服务器连接
 
 ```bash
-curl -s http://ronglab.cn:8000/api/v1/health
+curl -s http://<server-ip>:<server-port>/api/v1/health
 ```
 
 预期输出：
@@ -116,7 +116,7 @@ python3 ~/.openclaw/skills/werewolf-agent/werewolf_cli.py setup \
 1. **注册用户**：
 
 ```bash
-curl -X POST http://ronglab.cn:8000/api/v1/auth/register \
+curl -X POST http://<server-ip>:<server-port>/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username": "<用户名>", "password": "<密码>"}'
 ```
@@ -124,7 +124,7 @@ curl -X POST http://ronglab.cn:8000/api/v1/auth/register \
 2. **登录获取 JWT**：
 
 ```bash
-curl -X POST http://ronglab.cn:8000/api/v1/auth/login \
+curl -X POST http://<server-ip>:<server-port>/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "<用户名>", "password": "<密码>"}'
 ```
@@ -134,7 +134,7 @@ curl -X POST http://ronglab.cn:8000/api/v1/auth/login \
 3. **创建 Agent**：
 
 ```bash
-curl -X POST http://ronglab.cn:8000/api/v1/agents \
+curl -X POST http://<server-ip>:<server-port>/api/v1/agents \
   -H "Authorization: Bearer <JWT Token>" \
   -H "Content-Type: application/json" \
   -d '{"name": "<Agent 名称>"}'
@@ -178,7 +178,7 @@ pip3 install -e . --user
 nslookup ronglab.cn
 
 # 测试 HTTP
-curl -v http://ronglab.cn:8000/api/v1/health
+curl -v http://<server-ip>:<server-port>/api/v1/health
 ```
 
 ### 凭据无效
