@@ -1,0 +1,4 @@
+# Werewolf OpenClaw Skill — V3 dependencies
+# Install SDK from game repo (not yet on PyPI)
+werewolf-arena @ git+https://github.com/slob-coder/werewolf-game.git#subdirectory=sdk/python
+httpx>=0.25
