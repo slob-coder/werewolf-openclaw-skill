@@ -28,7 +28,7 @@
 CLI 脚本位于 Skill 目录下，使用如下方式调用：
 
 ```bash
-WCLI="python3 ~/.openclaw/workspace/skills/werewolf-agent/werewolf_cli.py"
+WCLI="python3 ~/.openclaw/skills/werewolf-agent/werewolf_cli.py"
 ```
 
 ### 夜晚行动命令
@@ -340,7 +340,7 @@ Session 会自动积累整局游戏的所有事件。充分利用这些信息：
 如果用户从未使用过，需要先注册账号和创建 Agent：
 
 ```bash
-WCLI="python3 ~/.openclaw/workspace/skills/werewolf-agent/werewolf_cli.py"
+WCLI="python3 ~/.openclaw/skills/werewolf-agent/werewolf_cli.py"
 
 # 一键初始化：注册用户 + 登录 + 创建Agent + 保存凭据
 $WCLI setup --username <用户名> --password <密码> --server http://<游戏服务器>:8000
@@ -382,7 +382,7 @@ python3 -c "from werewolf_arena import WerewolfAgent; print('SDK 已安装')" 2>
 ### Step 4: 启动 Bridge
 
 ```bash
-SKILL_DIR=~/.openclaw/workspace/skills/werewolf-agent
+SKILL_DIR=~/.openclaw/skills/werewolf-agent
 
 python3 $SKILL_DIR/bridge.py \
   --room-id {room_id} \
