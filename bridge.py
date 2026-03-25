@@ -36,6 +36,8 @@ log = logging.getLogger("bridge")
 # Runtime context — shared with werewolf_cli.py
 # ---------------------------------------------------------------------------
 CONTEXT_DIR = Path("/tmp/werewolf_arena")
+SKILL_DIR = Path("~/.openclaw/workspace/skills/werewolf-agent").expanduser()
+WCLI = f"python3 {SKILL_DIR}/werewolf_cli.py"
 
 
 def _context_path(room_id: str) -> Path:
@@ -181,7 +183,7 @@ class BridgeAgent(WerewolfAgent):
             f"存活玩家: {self._alive_players}\n"
             f"本轮已有发言:\n{speech_lines}\n\n"
             f"请分析局势并执行发言命令:\n"
-            f"  python werewolf_cli.py speech --content \"你的发言内容\""
+            f"  {WCLI} speech --content \"你的发言内容\""
         )
         await self._forward(msg, need_response=True, deadline=90)
         return None  # CLI already submitted
@@ -192,8 +194,8 @@ class BridgeAgent(WerewolfAgent):
             f"投票阶段。\n"
             f"存活玩家: {self._alive_players}\n\n"
             f"请分析后执行投票命令:\n"
-            f"  python werewolf_cli.py vote --target <座位号>\n"
-            f"  python werewolf_cli.py vote --abstain  # 弃票"
+            f"  {WCLI} vote --target <座位号>\n"
+            f"  {WCLI} vote --abstain  # 弃票"
         )
         await self._forward(msg, need_response=True, deadline=60)
         return None
@@ -293,7 +295,7 @@ class BridgeAgent(WerewolfAgent):
                 f"你的队友: {self._teammates}\n"
                 f"存活玩家: {self._alive_players}\n\n"
                 f"请选择击杀目标并执行命令:\n"
-                f"  python werewolf_cli.py kill --target <座位号>"
+                f"  {WCLI} kill --target <座位号>"
             )
             await self._forward(msg, need_response=True, deadline=60)
 
@@ -307,7 +309,7 @@ class BridgeAgent(WerewolfAgent):
                 f"存活玩家: {self._alive_players}"
                 f"{checked_info}\n\n"
                 f"请选择查验目标并执行命令:\n"
-                f"  python werewolf_cli.py check --target <座位号>"
+                f"  {WCLI} check --target <座位号>"
             )
             await self._forward(msg, need_response=True, deadline=60)
 
@@ -321,9 +323,9 @@ class BridgeAgent(WerewolfAgent):
                 f"{victim_info}\n"
                 f"存活玩家: {self._alive_players}\n\n"
                 f"可执行命令:\n"
-                f"  python werewolf_cli.py save              # 使用解药救人\n"
-                f"  python werewolf_cli.py poison --target <座位号>  # 使用毒药\n"
-                f"  python werewolf_cli.py skip              # 不使用药水"
+                f"  {WCLI} save              # 使用解药救人\n"
+                f"  {WCLI} poison --target <座位号>  # 使用毒药\n"
+                f"  {WCLI} skip              # 不使用药水"
             )
             await self._forward(msg, need_response=True, deadline=60)
 
@@ -334,8 +336,8 @@ class BridgeAgent(WerewolfAgent):
                 f"猎人被毒杀，是否开枪？\n"
                 f"注意: 被女巫毒杀的猎人通常不能开枪（取决于规则设置）。\n\n"
                 f"可执行命令:\n"
-                f"  python werewolf_cli.py shoot --target <座位号>  # 开枪带人\n"
-                f"  python werewolf_cli.py skip                    # 不开枪"
+                f"  {WCLI} shoot --target <座位号>  # 开枪带人\n"
+                f"  {WCLI} skip                    # 不开枪"
             )
             await self._forward(msg, need_response=True, deadline=30)
 
@@ -374,8 +376,8 @@ class BridgeAgent(WerewolfAgent):
                 f"猎人发动技能，请选择开枪目标。\n"
                 f"存活玩家: {self._alive_players}\n\n"
                 f"可执行命令:\n"
-                f"  python werewolf_cli.py shoot --target <座位号>\n"
-                f"  python werewolf_cli.py skip  # 不开枪"
+                f"  {WCLI} shoot --target <座位号>\n"
+                f"  {WCLI} skip  # 不开枪"
             )
             await self._forward(msg, need_response=True, deadline=30)
 
@@ -384,15 +386,9 @@ class BridgeAgent(WerewolfAgent):
             msg = (
                 f"[GAME_EVENT] phase.last_words\n"
                 f"请发表遗言。\n\n"
-                f"  python werewolf_cli.py speech --content \"你的遗言\""
+                f"  {WCLI} speech --content \"你的遗言\""
             )
             await self._forward(msg, need_response=True, deadline=30)
-
-    # ── Lifecycle overrides ───────────────────────────────────
-
-    async def connect(self, **kwargs: Any) -> None:
-        self._register_custom_handlers()
-        await super().connect(**kwargs)
 
     # ── Internal helpers ──────────────────────────────────────
 
@@ -436,13 +432,127 @@ class BridgeAgent(WerewolfAgent):
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Werewolf Arena OpenClaw Bridge (V3)")
     p.add_argument("--room-id", required=True, help="Game room ID")
+    p.add_argument("--game-id", default=None,
+                   help="Game ID (if omitted, bridge will auto-start when all players ready)")
     p.add_argument("--api-key", required=True, help="Werewolf Arena Agent API key")
     p.add_argument("--server", default="http://localhost:8000", help="Game server URL")
     p.add_argument("--openclaw-gateway", default="127.0.0.1:18789", help="OpenClaw Gateway host:port")
     p.add_argument("--openclaw-hook-token", required=True, help="OpenClaw webhook token")
     p.add_argument("--openclaw-agent-id", default=None, help="OpenClaw agent ID")
     p.add_argument("--timeout-buffer", type=int, default=10, help="Seconds before deadline for fallback")
+    p.add_argument("--auto-start", action="store_true", default=True,
+                   help="Auto-start game when all players ready (default: true)")
+    p.add_argument("--no-auto-start", dest="auto_start", action="store_false",
+                   help="Don't auto-start; wait for --game-id or external start")
     return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# game_id resolution — the core lifecycle problem
+# ---------------------------------------------------------------------------
+#
+# Lifecycle:
+#   ① join_room (REST)     → seat assigned, no game_id yet
+#   ② toggle_ready (REST)  → marked ready
+#   ③ game starts           → game_id created (only returned by POST /rooms/{id}/start)
+#   ④ set_game_id           → SDK requires this before connect()
+#   ⑤ connect (Socket.IO)  → auth = {api_key, game_id}
+#   ⑥ run_async             → receive events
+#
+# Gap: between ② and ⑤, the agent needs game_id, but:
+#   - RoomResponse doesn't include game_id
+#   - game_id is only in the RoomStartResponse from POST /rooms/{id}/start
+#
+# Strategy:
+#   A. --game-id provided     → use it directly (skip to ⑤)
+#   B. --auto-start enabled   → poll room, call start when full+ready, get game_id
+#   C. neither                → poll room status until "in_progress", then query for game_id
+
+async def wait_for_game_id(
+    rest_client: httpx.AsyncClient,
+    server_url: str,
+    room_id: str,
+    api_key: str,
+    auto_start: bool,
+) -> str:
+    """Poll room status and resolve game_id. Returns game_id string."""
+    base = f"{server_url.rstrip('/')}/api/v1"
+    headers = {"X-Agent-Key": api_key}
+
+    for attempt in range(120):  # ~4 minutes max
+        await asyncio.sleep(2)
+
+        # Check room status
+        try:
+            resp = await rest_client.get(f"{base}/rooms/{room_id}", headers=headers)
+            room = resp.json()
+        except Exception as exc:
+            log.warning("Room poll failed: %s", exc)
+            continue
+
+        status = room.get("status", "")
+
+        if status == "in_progress":
+            # Game already started by someone else — find game_id
+            log.info("Room is in_progress, searching for game_id...")
+            game_id = await _find_game_id_for_room(rest_client, base, room_id, headers)
+            if game_id:
+                return game_id
+            # Fallback: can't find it via API, ask user
+            log.error("Game started but cannot discover game_id via API.")
+            log.error("Please restart with --game-id <id>")
+            raise SystemExit(1)
+
+        if auto_start and status == "full":
+            # All slots occupied — check if all ready, try to start
+            slots = room.get("slots", [])
+            all_ready = all(s.get("status") == "ready" for s in slots if s.get("status") != "empty")
+            if all_ready:
+                log.info("All players ready. Starting game...")
+                try:
+                    start_resp = await rest_client.post(
+                        f"{base}/rooms/{room_id}/start", headers=headers
+                    )
+                    start_data = start_resp.json()
+                    game_id = start_data.get("game_id")
+                    if game_id:
+                        log.info("Game started! game_id=%s", game_id)
+                        return game_id
+                    log.warning("Start response missing game_id: %s", start_data)
+                except Exception as exc:
+                    log.warning("Start attempt failed: %s (may already be started)", exc)
+
+        # Still waiting
+        player_count = room.get("current_players", "?")
+        total = room.get("player_count", "?")
+        if attempt % 5 == 0:
+            log.info("Waiting for game... room=%s status=%s players=%s/%s",
+                     room_id, status, player_count, total)
+
+    log.error("Timeout waiting for game to start. Please provide --game-id manually.")
+    raise SystemExit(1)
+
+
+async def _find_game_id_for_room(
+    client: httpx.AsyncClient, base: str, room_id: str, headers: dict
+) -> str | None:
+    """Try to discover game_id for an in-progress room.
+    Queries recent games or uses room's game relationship."""
+    # Attempt: query games endpoint if it exists
+    # The server doesn't have a /games?room_id=X endpoint, so we try
+    # getting the room and looking for game info in the response.
+    # If not found, return None.
+    try:
+        # Some servers may include game info — try parsing
+        resp = await client.get(f"{base}/rooms/{room_id}", headers=headers)
+        room = resp.json()
+        # Check if game_id is nested in config or elsewhere
+        game_id = room.get("game_id") or room.get("config", {}).get("game_id")
+        if game_id:
+            return game_id
+    except Exception:
+        pass
+    return None
 
 
 async def main() -> None:
@@ -464,27 +574,44 @@ async def main() -> None:
     )
 
     try:
-        # Join room and get seat
+        # ── Phase 1: Join room (REST) ──
         result = await agent.join_room(args.room_id)
         log.info("Joined room %s at seat %s", args.room_id, result.get("seat"))
 
-        # Toggle ready
+        # ── Phase 2: Mark ready (REST) ──
         await agent.rest.toggle_ready(args.room_id)
-        log.info("Marked ready. Waiting for game to start...")
+        log.info("Marked ready.")
 
-        # Wait for game_id to be assigned (game needs to start)
-        # In practice, another process starts the game; we poll or wait.
-        # For now, user can set game_id manually or it's obtained via game.sync.
-        # The SDK auto-sets game_id from game.sync on connect.
+        # ── Phase 3: Resolve game_id ──
+        if args.game_id:
+            # Provided by user — use directly
+            agent.set_game_id(args.game_id)
+            log.info("Using provided game_id: %s", args.game_id)
+        else:
+            # Wait for game to start, auto-start if enabled
+            log.info("Waiting for game_id (auto_start=%s)...", args.auto_start)
+            async with httpx.AsyncClient() as http:
+                game_id = await wait_for_game_id(
+                    http, args.server, args.room_id, args.api_key, args.auto_start
+                )
+            agent.set_game_id(game_id)
+            log.info("Resolved game_id: %s", game_id)
 
-        # Connect will block until game_id is set — in real usage, the game
-        # start event comes after all players are ready.
-        # For MVP, accept game_id as an optional arg or wait for it.
+        # ── Phase 4: Connect Socket.IO (requires game_id) ──
+        # Custom handlers must be registered before connect
+        agent._register_custom_handlers()
+        await agent.connect()
+        log.info("Socket.IO connected.")
 
-        # Run agent (blocks until game ends)
+        # ── Phase 5: Run until game ends ──
         await agent.run_async()
+
     except KeyboardInterrupt:
         log.info("Interrupted.")
+    except SystemExit:
+        raise
+    except Exception as exc:
+        log.error("Fatal error: %s", exc, exc_info=True)
     finally:
         await webhook.close()
         await agent.rest.close()

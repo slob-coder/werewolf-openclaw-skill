@@ -26,10 +26,30 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 from werewolf_arena import Action, ArenaRESTClient, ArenaAPIError, ArenaConnectionError
 
 # ---------------------------------------------------------------------------
-# Runtime context
+# Credential store — persistent across sessions
+# ---------------------------------------------------------------------------
+CRED_DIR = Path.home() / ".werewolf-arena"
+CRED_FILE = CRED_DIR / "credentials.json"
+
+
+def load_creds() -> dict:
+    if CRED_FILE.exists():
+        return json.loads(CRED_FILE.read_text())
+    return {}
+
+
+def save_creds(creds: dict) -> None:
+    CRED_DIR.mkdir(parents=True, exist_ok=True)
+    CRED_FILE.write_text(json.dumps(creds, indent=2))
+    CRED_FILE.chmod(0o600)
+
+
+# ---------------------------------------------------------------------------
+# Runtime context — written by bridge.py during game
 # ---------------------------------------------------------------------------
 CONTEXT_DIR = Path("/tmp/werewolf_arena")
 
@@ -222,6 +242,193 @@ async def handle_action(cmd: str, args: argparse.Namespace, ctx: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Setup & Room management (no bridge needed, uses REST directly)
+# ---------------------------------------------------------------------------
+
+def _get_server(args) -> str:
+    server = getattr(args, "server", None)
+    if not server:
+        creds = load_creds()
+        server = creds.get("server", "http://localhost:8000")
+    return server.rstrip("/")
+
+
+async def handle_setup(args: argparse.Namespace) -> None:
+    """One-time setup: register user → login → create agent → save all."""
+    server = _get_server(args)
+    base = f"{server}/api/v1"
+
+    async with httpx.AsyncClient() as http:
+        # Step 1: Register user
+        username = args.username
+        password = args.password
+        print(f"📝 注册用户 {username}...")
+        try:
+            resp = await http.post(f"{base}/auth/register", json={
+                "username": username, "password": password,
+            })
+            if resp.status_code == 201:
+                user = resp.json()
+                print(f"✅ 用户注册成功: {user.get('id', '?')}")
+            elif resp.status_code == 400 and "already" in resp.text.lower():
+                print(f"ℹ️  用户 {username} 已存在，跳过注册")
+            else:
+                print(f"❌ 注册失败: {resp.text}")
+                return
+        except Exception as e:
+            print(f"❌ 连接失败: {e}")
+            return
+
+        # Step 2: Login
+        print(f"🔑 登录...")
+        resp = await http.post(f"{base}/auth/login", json={
+            "username": username, "password": password,
+        })
+        if resp.status_code != 200:
+            print(f"❌ 登录失败: {resp.text}")
+            return
+        jwt_token = resp.json().get("access_token")
+        print(f"✅ 登录成功")
+
+        # Step 3: Create agent
+        agent_name = args.agent_name or f"{username}-agent"
+        print(f"🤖 创建 Agent: {agent_name}...")
+        resp = await http.post(f"{base}/agents", json={
+            "name": agent_name,
+            "description": f"OpenClaw Werewolf Agent ({username})",
+        }, headers={"Authorization": f"Bearer {jwt_token}"})
+
+        if resp.status_code != 201:
+            print(f"❌ 创建 Agent 失败: {resp.text}")
+            return
+        agent_data = resp.json()
+        api_key = agent_data.get("api_key")
+        agent_id = agent_data.get("id")
+        print(f"✅ Agent 创建成功")
+        print(f"   Agent ID:  {agent_id}")
+        print(f"   API Key:   {api_key}")
+        print(f"   ⚠️  API Key 仅显示一次，请妥善保存！")
+
+        # Save credentials
+        creds = {
+            "server": server,
+            "username": username,
+            "jwt_token": jwt_token,
+            "agent_id": agent_id,
+            "api_key": api_key,
+        }
+        save_creds(creds)
+        print(f"\n✅ 凭据已保存到 {CRED_FILE}")
+        print(f"   后续命令将自动使用这些凭据。")
+
+
+async def handle_login(args: argparse.Namespace) -> None:
+    """Login to refresh JWT token."""
+    server = _get_server(args)
+    base = f"{server}/api/v1"
+
+    async with httpx.AsyncClient() as http:
+        resp = await http.post(f"{base}/auth/login", json={
+            "username": args.username, "password": args.password,
+        })
+        if resp.status_code != 200:
+            print(f"❌ 登录失败: {resp.text}")
+            return
+        jwt_token = resp.json().get("access_token")
+        creds = load_creds()
+        creds["jwt_token"] = jwt_token
+        creds["server"] = server
+        creds["username"] = args.username
+        save_creds(creds)
+        print(f"✅ 登录成功，token 已更新")
+
+
+async def handle_create_room(args: argparse.Namespace) -> None:
+    """Create a game room (requires JWT)."""
+    creds = load_creds()
+    jwt_token = creds.get("jwt_token")
+    if not jwt_token:
+        print("❌ 未登录。请先执行: werewolf_cli.py setup 或 werewolf_cli.py login")
+        return
+
+    server = _get_server(args)
+    base = f"{server}/api/v1"
+    name = args.name or "OpenClaw 狼人杀"
+    preset = args.preset or "standard_9"
+    player_count = args.players or 9
+
+    async with httpx.AsyncClient() as http:
+        resp = await http.post(f"{base}/rooms", json={
+            "name": name,
+            "player_count": player_count,
+            "role_preset": preset,
+            "auto_start": True,
+        }, headers={"Authorization": f"Bearer {jwt_token}"})
+
+        if resp.status_code == 201:
+            room = resp.json()
+            room_id = room.get("id")
+            print(f"✅ 房间创建成功")
+            print(f"   房间 ID:   {room_id}")
+            print(f"   房间名:    {room.get('name')}")
+            print(f"   人数:      {room.get('player_count')}")
+            print(f"\n   下一步 — 启动 Bridge 加入游戏:")
+            api_key = creds.get("api_key", "<你的API Key>")
+            print(f"   python3 bridge.py --room-id {room_id} --api-key {api_key} ...")
+        elif resp.status_code == 401:
+            print("❌ JWT 过期。请执行: werewolf_cli.py login --username <用户名> --password <密码>")
+        else:
+            print(f"❌ 创建失败 ({resp.status_code}): {resp.text}")
+
+
+async def handle_list_rooms(args: argparse.Namespace) -> None:
+    """List available rooms."""
+    server = _get_server(args)
+    base = f"{server}/api/v1"
+
+    async with httpx.AsyncClient() as http:
+        params = {}
+        if args.status:
+            params["status"] = args.status
+        resp = await http.get(f"{base}/rooms", params=params)
+        if resp.status_code != 200:
+            print(f"❌ 查询失败: {resp.text}")
+            return
+        rooms = resp.json()
+
+    if not rooms:
+        print("📭 没有可用房间。使用 create-room 创建一个。")
+        return
+
+    print(f"🏠 房间列表 ({len(rooms)} 个):\n")
+    for r in rooms:
+        status_emoji = {
+            "open": "🟢", "full": "🟡", "in_progress": "🔴", "finished": "⚫"
+        }.get(r.get("status", ""), "⚪")
+        print(f"  {status_emoji} {r.get('id', '?')[:8]}...  "
+              f"{r.get('name', '?'):20s}  "
+              f"{r.get('current_players', 0)}/{r.get('player_count', '?')}人  "
+              f"({r.get('status', '?')})")
+
+
+async def handle_show_creds(_args: argparse.Namespace) -> None:
+    """Show saved credentials."""
+    creds = load_creds()
+    if not creds:
+        print("📭 未找到凭据。请先执行: werewolf_cli.py setup")
+        return
+    print("🔐 已保存凭据:\n")
+    print(f"  服务器:    {creds.get('server', '?')}")
+    print(f"  用户名:    {creds.get('username', '?')}")
+    print(f"  Agent ID:  {creds.get('agent_id', '?')}")
+    api_key = creds.get("api_key", "")
+    masked = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else api_key
+    print(f"  API Key:   {masked}")
+    print(f"  JWT:       {'✅ 有' if creds.get('jwt_token') else '❌ 无'}")
+    print(f"\n  文件: {CRED_FILE}")
+
+
+# ---------------------------------------------------------------------------
 # CLI parser
 # ---------------------------------------------------------------------------
 
@@ -230,9 +437,33 @@ def build_parser() -> argparse.ArgumentParser:
         prog="werewolf_cli.py",
         description="Werewolf Arena 业务命令脚本",
     )
+    p.add_argument("--server", default=None, help="游戏服务器地址 (默认从凭据读取)")
     sub = p.add_subparsers(dest="command", help="可用命令")
 
-    # Night actions
+    # ── Setup commands (no bridge needed) ──
+
+    sp = sub.add_parser("setup", help="一键初始化: 注册用户 + 创建Agent + 保存凭据")
+    sp.add_argument("--username", required=True, help="用户名")
+    sp.add_argument("--password", required=True, help="密码")
+    sp.add_argument("--agent-name", default=None, help="Agent 名称 (默认: 用户名-agent)")
+
+    sp = sub.add_parser("login", help="登录刷新 JWT token")
+    sp.add_argument("--username", required=True, help="用户名")
+    sp.add_argument("--password", required=True, help="密码")
+
+    sp = sub.add_parser("create-room", help="创建游戏房间")
+    sp.add_argument("--name", default=None, help="房间名称")
+    sp.add_argument("--preset", default="standard_9",
+                    help="角色预设 (standard_9/standard_12/guard_9)")
+    sp.add_argument("--players", type=int, default=None, help="玩家人数")
+
+    sp = sub.add_parser("list-rooms", help="查看可用房间")
+    sp.add_argument("--status", default=None, help="按状态过滤 (open/full/in_progress)")
+
+    sub.add_parser("creds", help="查看已保存的凭据")
+
+    # ── Game action commands (bridge must be running) ──
+
     for cmd in ("kill", "check", "guard", "poison", "shoot"):
         sp = sub.add_parser(cmd, help=COMMAND_DESC[cmd])
         sp.add_argument("--target", type=int, required=True, help="目标座位号")
@@ -240,21 +471,25 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("save", help=COMMAND_DESC["save"])
     sub.add_parser("skip", help=COMMAND_DESC["skip"])
 
-    # Speech
     sp = sub.add_parser("speech", help=COMMAND_DESC["speech"])
     sp.add_argument("--content", type=str, required=True, help="发言内容")
 
-    # Vote
     sp = sub.add_parser("vote", help=COMMAND_DESC["vote"])
     vote_group = sp.add_mutually_exclusive_group(required=True)
     vote_group.add_argument("--target", type=int, help="投票目标座位号")
     vote_group.add_argument("--abstain", action="store_true", help="弃票")
 
-    # Query commands
+    # ── Query commands ──
     sub.add_parser("status", help="查看当前游戏状态")
     sub.add_parser("alive", help="查看存活玩家")
 
     return p
+
+
+# Commands that don't need bridge/game context
+SETUP_COMMANDS = {"setup", "login", "create-room", "list-rooms", "creds"}
+QUERY_COMMANDS = {"status", "alive"}
+ACTION_COMMANDS = set(COMMAND_MAP.keys()) | {"save", "skip"}
 
 
 def main() -> None:
@@ -265,12 +500,29 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
+    # Setup commands — no bridge needed
+    if args.command == "setup":
+        asyncio.run(handle_setup(args))
+        return
+    if args.command == "login":
+        asyncio.run(handle_login(args))
+        return
+    if args.command == "create-room":
+        asyncio.run(handle_create_room(args))
+        return
+    if args.command == "list-rooms":
+        asyncio.run(handle_list_rooms(args))
+        return
+    if args.command == "creds":
+        asyncio.run(handle_show_creds(args))
+        return
+
+    # Game commands — need bridge context
     ctx = find_context()
 
     if args.command == "status":
         handle_status(ctx)
         return
-
     if args.command == "alive":
         handle_alive(ctx)
         return

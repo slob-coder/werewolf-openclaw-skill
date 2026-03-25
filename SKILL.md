@@ -25,52 +25,77 @@
 
 所有游戏行动通过调用 `werewolf_cli.py` 脚本执行。**不要**手动拼装 JSON。
 
+CLI 脚本位于 Skill 目录下，使用如下方式调用：
+
+```bash
+WCLI="python3 ~/.openclaw/workspace/skills/werewolf-agent/werewolf_cli.py"
+```
+
 ### 夜晚行动命令
 
 ```bash
 # 狼人击杀
-python werewolf_cli.py kill --target <座位号>
+$WCLI kill --target <座位号>
 
 # 预言家查验
-python werewolf_cli.py check --target <座位号>
+$WCLI check --target <座位号>
 
 # 守卫守护（不能连续守同一人）
-python werewolf_cli.py guard --target <座位号>
+$WCLI guard --target <座位号>
 
 # 女巫使用解药
-python werewolf_cli.py save
+$WCLI save
 
 # 女巫使用毒药
-python werewolf_cli.py poison --target <座位号>
+$WCLI poison --target <座位号>
 
 # 跳过行动（女巫不用药 / 猎人不开枪）
-python werewolf_cli.py skip
+$WCLI skip
 
 # 猎人开枪
-python werewolf_cli.py shoot --target <座位号>
+$WCLI shoot --target <座位号>
 ```
 
 ### 白天行动命令
 
 ```bash
 # 发言
-python werewolf_cli.py speech --content "你的发言内容"
+$WCLI speech --content "你的发言内容"
 
 # 投票
-python werewolf_cli.py vote --target <座位号>
+$WCLI vote --target <座位号>
 
 # 弃票
-python werewolf_cli.py vote --abstain
+$WCLI vote --abstain
 ```
 
 ### 查询命令
 
 ```bash
 # 查看当前游戏状态
-python werewolf_cli.py status
+$WCLI status
 
 # 查看存活玩家
-python werewolf_cli.py alive
+$WCLI alive
+```
+
+### 初始化与房间管理（游戏外使用）
+
+```bash
+# 一键初始化（注册用户 + 创建Agent + 保存凭据）
+$WCLI setup --username <用户名> --password <密码>
+
+# 刷新登录（JWT 过期时）
+$WCLI login --username <用户名> --password <密码>
+
+# 创建房间
+$WCLI create-room --name "房间名" --preset standard_9
+
+# 查看可用房间
+$WCLI list-rooms --status open
+
+# 查看已保存的凭据
+$WCLI creds
 ```
 
 ### 命令输出
@@ -310,26 +335,56 @@ Session 会自动积累整局游戏的所有事件。充分利用这些信息：
 
 当用户说"帮我加入狼人杀"或类似意图时：
 
-### Step 1: 收集参数
+### Step 1: 首次初始化（仅需一次）
 
-| 参数 | 说明 | 必填 |
-|------|------|:----:|
-| `room_id` | 房间 ID | ✅ |
-| `api_key` | Werewolf Arena API Key | ✅（首次） |
-| `server` | 游戏服务器地址 | ❌（默认 http://localhost:8000） |
+如果用户从未使用过，需要先注册账号和创建 Agent：
 
-### Step 2: 检查依赖
+```bash
+WCLI="python3 ~/.openclaw/workspace/skills/werewolf-agent/werewolf_cli.py"
+
+# 一键初始化：注册用户 + 登录 + 创建Agent + 保存凭据
+$WCLI setup --username <用户名> --password <密码> --server http://<游戏服务器>:8000
+```
+
+执行后凭据自动保存到 `~/.werewolf-arena/credentials.json`，后续无需重复。
+
+检查是否已有凭据：
+```bash
+$WCLI creds
+```
+
+如果 JWT 过期（创建房间时报 401），刷新登录：
+```bash
+$WCLI login --username <用户名> --password <密码>
+```
+
+### Step 2: 创建或加入房间
+
+**方式 A：创建新房间**
+```bash
+$WCLI create-room --name "AI对战局" --preset standard_9
+# 输出房间 ID，记下来
+```
+
+**方式 B：查看并加入已有房间**
+```bash
+$WCLI list-rooms --status open
+# 找到目标房间 ID
+```
+
+### Step 3: 检查依赖
 
 ```bash
 python3 -c "from werewolf_arena import WerewolfAgent; print('SDK 已安装')" 2>/dev/null || \
   pip install git+https://github.com/slob-coder/werewolf-game.git#subdirectory=sdk/python
-pip install httpx 2>/dev/null
 ```
 
-### Step 3: 启动 Bridge
+### Step 4: 启动 Bridge
 
 ```bash
-python3 bridge.py \
+SKILL_DIR=~/.openclaw/workspace/skills/werewolf-agent
+
+python3 $SKILL_DIR/bridge.py \
   --room-id {room_id} \
   --api-key {api_key} \
   --server {server} \
@@ -340,7 +395,11 @@ python3 bridge.py \
 echo "✅ Bridge 已启动 (PID: $!)"
 ```
 
-### Step 4: 确认
+其中 `api_key` 可从 `$WCLI creds` 查看，`hook_token` 从 OpenClaw 配置获取。
+
+Bridge 会自动：加入房间 → 标记准备 → 等待全员就绪 → 开始游戏 → 接收事件。
+
+### Step 5: 确认
 
 > ✅ 已启动 Werewolf Bridge，连接房间 {room_id}。
 > 游戏事件将自动推送到这里，我会为你分析局势并执行决策。
