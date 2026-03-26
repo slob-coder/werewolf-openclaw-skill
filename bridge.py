@@ -23,6 +23,14 @@ from typing import Any, Dict, Optional
 import httpx
 from werewolf_arena import Action, GameEvent, WerewolfAgent
 
+# Observability 监控模块
+OBSERVABILITY_DIR = Path("~/.openclaw/skills/observability").expanduser()
+import sys
+if str(OBSERVABILITY_DIR) not in sys.path:
+    sys.path.insert(0, str(OBSERVABILITY_DIR))
+
+from observability import Reporter, HealthChecker, Metrics
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -145,6 +153,7 @@ class BridgeAgent(WerewolfAgent):
         self,
         webhook: WebhookClient,
         room_id: str,
+        reporter: Optional[Reporter] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -156,6 +165,28 @@ class BridgeAgent(WerewolfAgent):
         self._dead_players: list[int] = []
         self._current_round: int = 0
         self._seer_results: dict[int, str] = {}  # seat → "werewolf"/"good"
+        
+        # 监控模块
+        self.reporter = reporter or Reporter(
+            agent_id="werewolf-bridge",
+            endpoint=None,  # 稍后根据 server 设置
+            session={"room_id": room_id},
+        )
+        self.health = HealthChecker(
+            metadata={"room_id": room_id},
+        )
+        self.metrics = Metrics(prefix="werewolf")
+        
+        # 连接状态（由 health 管理，这里保留兼容）
+        self._connected: bool = False
+        self._disconnect_count: int = 0
+        self._last_disconnect_time: float | None = None
+    
+    def setup_reporter(self, server: str, api_key: str) -> None:
+        """配置 Reporter 的上报端点"""
+        self.reporter.endpoint = f"{server.rstrip('/')}/api/v1/agent/reports"
+        self.reporter.api_key = api_key
+        log.info("Reporter configured: %s", self.reporter.endpoint)
 
     # ── SDK callback overrides ────────────────────────────────
 
@@ -304,11 +335,73 @@ class BridgeAgent(WerewolfAgent):
         # 🔍 DEBUG: 连接/断开事件
         @self._sio.on("connect", namespace=ns)
         async def _debug_connect():
+            was_disconnected = not self._connected and self._disconnect_count > 0
+            self._connected = True
+            self.health.set_connected(True)
+            self._write_status_file()
             log.info("🔍 [DEBUG] Socket.IO CONNECTED to namespace '%s'", ns)
+            
+            # 重连通知
+            if was_disconnected:
+                log.info("✅ 重新连接成功！")
+                
+                # 上报重连事件
+                self.reporter.capture_event("connection.restored", {
+                    "disconnect_count": self.health.disconnect_count,
+                    "room_id": self._room_id,
+                })
+                
+                msg = (
+                    f"[ALERT] bridge.reconnected\n"
+                    f"⚠️ 已重新连接到游戏服务器\n"
+                    f"房间: {self._room_id}\n"
+                    f"之前断开次数: {self._disconnect_count}\n"
+                    f"游戏将继续进行。"
+                )
+                await self._forward(msg, need_response=False)
             
         @self._sio.on("disconnect", namespace=ns)
         async def _debug_disconnect():
+            import time
+            self._connected = False
+            self._disconnect_count += 1
+            self._last_disconnect_time = time.time()
+            self.health.set_connected(False)
+            self.health.record_error()
+            self._write_status_file()
             log.info("🔍 [DEBUG] Socket.IO DISCONNECTED from namespace '%s'", ns)
+            log.warning("⚠️ 与游戏服务器断开连接！断开次数: %d", self._disconnect_count)
+            
+            # 上报断开连接事件
+            self.reporter.capture_event("connection.lost", {
+                "disconnect_count": self._disconnect_count,
+                "room_id": self._room_id,
+                "game_id": self.game_id,
+            })
+            
+            # 断开连接告警
+            msg = (
+                f"[ALERT] bridge.disconnected\n"
+                f"⚠️ 与游戏服务器断开连接！\n"
+                f"房间: {self._room_id}\n"
+                f"断开次数: {self._disconnect_count}\n"
+                f"正在尝试重新连接..."
+            )
+            await self._forward(msg, need_response=False)
+            self._last_disconnect_time = time.time()
+            self._write_status_file()
+            log.info("🔍 [DEBUG] Socket.IO DISCONNECTED from namespace '%s'", ns)
+            log.warning("⚠️ 与游戏服务器断开连接！断开次数: %d", self._disconnect_count)
+            
+            # 断开连接告警
+            msg = (
+                f"[ALERT] bridge.disconnected\n"
+                f"⚠️ 与游戏服务器断开连接！\n"
+                f"房间: {self._room_id}\n"
+                f"断开次数: {self._disconnect_count}\n"
+                f"正在尝试重新连接..."
+            )
+            await self._forward(msg, need_response=False)
 
         @self._sio.on("role.assigned", namespace=ns)
         async def _on_role_assigned(data: dict) -> None:
@@ -462,6 +555,17 @@ class BridgeAgent(WerewolfAgent):
             "current_round": self._current_round,
         }
         write_context(self._room_id, ctx)
+
+    def _write_status_file(self) -> None:
+        """Write health status and metrics to files for external monitoring."""
+        status_dir = CONTEXT_DIR / self._room_id
+        status_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 健康状态
+        self.health.write_status_file(status_dir / "health.json")
+        
+        # 性能指标
+        self.metrics.write_file(status_dir / "metrics.json")
 
 
 # ---------------------------------------------------------------------------
@@ -663,6 +767,9 @@ async def main() -> None:
         agent_name="OpenClaw-Bridge",
     )
     agent_ref[0] = agent  # 保存引用用于优雅退出
+    
+    # 配置 Reporter 上报端点
+    agent.setup_reporter(args.server, args.api_key)
 
     try:
         # ── Phase 1: Join room (REST) ──
@@ -711,7 +818,17 @@ async def main() -> None:
         raise
     except Exception as exc:
         log.error("Fatal error: %s", exc, exc_info=True)
+        # 上报异常
+        if agent_ref[0]:
+            agent_ref[0].reporter.capture_exception(exc, context={
+                "room_id": args.room_id,
+                "game_id": getattr(agent_ref[0], "game_id", None),
+            })
     finally:
+        # 关闭 Reporter（发送缓存的上报）
+        if agent_ref[0]:
+            agent_ref[0].reporter.close()
+        
         # 如果 signal handler 已经调用过 leave，跳过
         if leave_done[0]:
             log.info("已在 signal handler 中离开房间，跳过 finally 清理")
