@@ -650,9 +650,9 @@ async def wait_for_game_id(
         if auto_start and status == "ready":
             # All slots occupied — check if all ready, try to start
             slots = room.get("slots", [])
-            # 🔍 修复: "occupied" 状态也应该被视为 ready（玩家已在房间但未点击准备按钮）
+            # 服务端要求所有玩家必须是 "ready" 状态才能 start
             all_ready = all(
-                s.get("status") in ("ready", "occupied") 
+                s.get("status") == "ready"
                 for s in slots 
                 if s.get("status") != "empty"
             )
