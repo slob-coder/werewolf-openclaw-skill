@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import random
+import signal
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -580,6 +581,40 @@ async def wait_for_game_id(
 async def main() -> None:
     args = parse_args()
 
+    # 用于优雅退出的标志和引用
+    shutdown_event = asyncio.Event()
+    agent_ref = [None]  # 用列表传递引用
+    leave_done = [False]  # 标记是否已调用 leave
+    
+    def signal_handler(sig, frame):
+        log.info("收到退出信号 %s，准备优雅退出...", sig)
+        # 同步调用 leave API（signal handler 中不能用 async）
+        creds_local = load_creds()
+        api_key = creds_local.get("api_key")  # 使用 X-Agent-Key
+        server = args.server or creds_local.get("server")
+        if api_key and server:
+            try:
+                import httpx as _httpx
+                resp = _httpx.post(
+                    f"{server}/api/v1/rooms/{args.room_id}/leave",
+                    headers={"X-Agent-Key": api_key},  # 正确的 header
+                    timeout=3.0
+                )
+                if resp.status_code == 200:
+                    log.info("✅ 已离开房间 (signal handler)")
+                else:
+                    log.warning("离开房间返回 %s: %s", resp.status_code, resp.text)
+            except Exception as e:
+                log.warning("离开房间出错: %s", e)
+        leave_done[0] = True
+        shutdown_event.set()
+        # 强制退出
+        import sys
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     # Load credentials if not provided
     creds = load_creds()
     if not args.api_key:
@@ -627,6 +662,7 @@ async def main() -> None:
         server_url=args.server,
         agent_name="OpenClaw-Bridge",
     )
+    agent_ref[0] = agent  # 保存引用用于优雅退出
 
     try:
         # ── Phase 1: Join room (REST) ──
@@ -676,6 +712,34 @@ async def main() -> None:
     except Exception as exc:
         log.error("Fatal error: %s", exc, exc_info=True)
     finally:
+        # 如果 signal handler 已经调用过 leave，跳过
+        if leave_done[0]:
+            log.info("已在 signal handler 中离开房间，跳过 finally 清理")
+        else:
+            # 优雅退出：调用 REST API 离开房间
+            try:
+                log.info("正在离开房间 %s...", args.room_id)
+                api_key = creds.get("api_key") or load_creds().get("api_key")
+                async with httpx.AsyncClient() as http:
+                    resp = await http.post(
+                        f"{args.server}/api/v1/rooms/{args.room_id}/leave",
+                        headers={"X-Agent-Key": api_key},  # 使用正确的 header
+                        timeout=5.0
+                    )
+                    if resp.status_code == 200:
+                        log.info("✅ 已成功离开房间")
+                    else:
+                        log.warning("离开房间返回 %s: %s", resp.status_code, resp.text)
+            except Exception as e:
+                log.warning("离开房间时出错: %s", e)
+        
+        # 断开 WebSocket
+        if agent_ref[0] and agent_ref[0].is_connected:
+            try:
+                await agent_ref[0].disconnect()
+            except Exception:
+                pass
+        
         await webhook.close()
         await agent.rest.close()
 

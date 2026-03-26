@@ -552,6 +552,35 @@ async def handle_show_creds(_args: argparse.Namespace) -> None:
     print(f"\n  文件: {CRED_FILE}")
 
 
+async def handle_leave(args: argparse.Namespace) -> None:
+    """Leave a room via REST API."""
+    creds = load_creds()
+    server = args.server or creds.get("server")
+    api_key = creds.get("api_key")  # 使用 X-Agent-Key
+    
+    if not server:
+        print("❌ 错误: 未配置服务器地址")
+        return
+    if not api_key:
+        print("❌ 错误: 未找到 API Key，请先运行 init")
+        return
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{server}/api/v1/rooms/{args.room_id}/leave",
+                headers={"X-Agent-Key": api_key},  # 使用正确的 header
+                timeout=10.0
+            )
+        
+        if resp.status_code == 200:
+            print(f"✅ 已离开房间 {args.room_id}")
+        else:
+            print(f"❌ 离开失败 ({resp.status_code}): {resp.text}")
+    except Exception as e:
+        print(f"❌ 请求失败: {e}")
+
+
 # ---------------------------------------------------------------------------
 # CLI parser
 # ---------------------------------------------------------------------------
@@ -590,6 +619,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--status", default=None, help="按状态过滤 (open/full/in_progress)")
 
     sub.add_parser("creds", help="查看已保存的凭据")
+
+    sp = sub.add_parser("leave", help="离开房间")
+    sp.add_argument("--room-id", required=True, help="房间 ID")
 
     # ── Game action commands (bridge must be running) ──
 
@@ -649,6 +681,9 @@ def main() -> None:
         return
     if args.command == "creds":
         asyncio.run(handle_show_creds(args))
+        return
+    if args.command == "leave":
+        asyncio.run(handle_leave(args))
         return
 
     # Game commands — need bridge context
