@@ -178,8 +178,19 @@ class BridgeAgent(WerewolfAgent):
         # SDK fires this for generic "phase.night". The actual role-specific
         # events (phase.night.werewolf etc.) are handled by custom handlers.
         # Return None so SDK doesn't submit anything.
+        log.info("🔍 [DEBUG] on_night_action triggered | role=%s | data=%s", 
+                 self.role, event.data)
         self._current_round = event.data.get("round", self._current_round + 1)
         self._update_context()
+        
+        # 🔍 添加转发逻辑用于调试
+        msg = (
+            f"[GAME_EVENT] phase.night (第 {self._current_round} 轮)\n"
+            f"夜晚阶段。\n"
+            f"你的角色: {self.role}\n"
+            f"请根据角色执行相应命令。"
+        )
+        await self._forward(msg, need_response=False)
         return None
 
     async def on_speech_turn(self, event: GameEvent) -> Optional[Action]:
@@ -281,6 +292,22 @@ class BridgeAgent(WerewolfAgent):
     def _register_custom_handlers(self) -> None:
         """Register handlers for events the SDK doesn't cover."""
         ns = "/agent"
+
+        # 🔍 DEBUG: 捕获所有事件的通配符监听器
+        @self._sio.on("*", namespace=ns)
+        async def _catch_all_events(event, data):
+            """记录所有收到的 Socket.IO 事件用于调试"""
+            log.info("🔍 [DEBUG] Socket.IO Event: '%s' | Data: %s", event, 
+                     str(data)[:200] if data else "None")
+        
+        # 🔍 DEBUG: 连接/断开事件
+        @self._sio.on("connect", namespace=ns)
+        async def _debug_connect():
+            log.info("🔍 [DEBUG] Socket.IO CONNECTED to namespace '%s'", ns)
+            
+        @self._sio.on("disconnect", namespace=ns)
+        async def _debug_disconnect():
+            log.info("🔍 [DEBUG] Socket.IO DISCONNECTED from namespace '%s'", ns)
 
         @self._sio.on("role.assigned", namespace=ns)
         async def _on_role_assigned(data: dict) -> None:
@@ -470,14 +497,13 @@ def parse_args() -> argparse.Namespace:
 #   ⑤ connect (Socket.IO)  → auth = {api_key, game_id}
 #   ⑥ run_async             → receive events
 #
-# Gap: between ② and ⑤, the agent needs game_id, but:
-#   - RoomResponse doesn't include game_id
-#   - game_id is only in the RoomStartResponse from POST /rooms/{id}/start
+# Gap resolved: RoomResponse now includes current_game_id
 #
 # Strategy:
 #   A. --game-id provided     → use it directly (skip to ⑤)
-#   B. --auto-start enabled   → poll room, call start when full+ready, get game_id
-#   C. neither                → poll room status until "in_progress", then query for game_id
+#   B. room.current_game_id exists → use it (game already started)
+#   C. --auto-start enabled   → poll room, call start when full+ready, get game_id
+#   D. neither                → poll room until current_game_id appears
 
 async def wait_for_game_id(
     rest_client: httpx.AsyncClient,
@@ -501,23 +527,30 @@ async def wait_for_game_id(
             log.warning("Room poll failed: %s", exc)
             continue
 
+        # 🎯 直接使用 current_game_id（后端已添加此字段）
+        game_id = room.get("current_game_id")
+        if game_id:
+            log.info("🎯 从 Room API 获取 game_id: %s", game_id)
+            return game_id
+
         status = room.get("status", "")
 
-        if status == "in_progress":
-            # Game already started by someone else — find game_id
-            log.info("Room is in_progress, searching for game_id...")
-            game_id = await _find_game_id_for_room(rest_client, base, room_id, headers)
-            if game_id:
-                return game_id
-            # Fallback: can't find it via API, ask user
-            log.error("Game started but cannot discover game_id via API.")
-            log.error("Please restart with --game-id <id>")
-            raise SystemExit(1)
+        # 优先使用 current_game_id（已在函数开头处理）
+        
+        if status in ("in_progress", "playing"):
+            # Game already started but current_game_id missing? This shouldn't happen
+            log.warning("Game in progress but current_game_id is null. Retrying...")
+            continue
 
         if auto_start and status == "ready":
             # All slots occupied — check if all ready, try to start
             slots = room.get("slots", [])
-            all_ready = all(s.get("status") == "ready" for s in slots if s.get("status") != "empty")
+            # 🔍 修复: "occupied" 状态也应该被视为 ready（玩家已在房间但未点击准备按钮）
+            all_ready = all(
+                s.get("status") in ("ready", "occupied") 
+                for s in slots 
+                if s.get("status") != "empty"
+            )
             if all_ready:
                 log.info("All players ready. Starting game...")
                 try:
@@ -542,28 +575,6 @@ async def wait_for_game_id(
 
     log.error("Timeout waiting for game to start. Please provide --game-id manually.")
     raise SystemExit(1)
-
-
-async def _find_game_id_for_room(
-    client: httpx.AsyncClient, base: str, room_id: str, headers: dict
-) -> str | None:
-    """Try to discover game_id for an in-progress room.
-    Queries recent games or uses room's game relationship."""
-    # Attempt: query games endpoint if it exists
-    # The server doesn't have a /games?room_id=X endpoint, so we try
-    # getting the room and looking for game info in the response.
-    # If not found, return None.
-    try:
-        # Some servers may include game info — try parsing
-        resp = await client.get(f"{base}/rooms/{room_id}", headers=headers)
-        room = resp.json()
-        # Check if game_id is nested in config or elsewhere
-        game_id = room.get("game_id") or room.get("config", {}).get("game_id")
-        if game_id:
-            return game_id
-    except Exception:
-        pass
-    return None
 
 
 async def main() -> None:
@@ -640,11 +651,13 @@ async def main() -> None:
         else:
             # Wait for game to start, auto-start if enabled
             log.info("Waiting for game_id (auto_start=%s)...", args.auto_start)
+            log.info("🔍 [DEBUG] Starting wait_for_game_id with room_id=%s", args.room_id)
             async with httpx.AsyncClient() as http:
                 game_id = await wait_for_game_id(
                     http, args.server, args.room_id, args.api_key, args.auto_start
                 )
             agent.set_game_id(game_id)
+            log.info("🔍 [DEBUG] Resolved game_id: %s", game_id)
             log.info("Resolved game_id: %s", game_id)
 
         # ── Phase 4: Connect Socket.IO (requires game_id) ──
